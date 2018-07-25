@@ -1,0 +1,40 @@
+function output = EXPwholePulse(x)
+
+global trace startpoint endpoint I flag;
+%%
+%	EXPF1DFT	Produces simultaneous bi-exponential constrained fits
+%
+%		x:  			[mag1 mag2]
+%  		data:			data to be fit
+%		startpoint: 	datapoint to start fit
+%		endpoint:		datapoint to end fit
+
+%x = [magtot hill_exp tau0 tau1 tau2 Ffast];
+
+magtot = x(1);
+hill = x(2);
+tau0 = x(3);
+tau1 = x(4);
+tau2 = x(5);
+Ffast = x(6);
+
+
+
+if (flag==0)
+	delta = ceil((endpoint-startpoint)/1000);
+else
+	delta = 1;
+end
+
+% trace = current in pA, T = time in ms
+
+T = I*[0:delta:(endpoint-startpoint)]/1000;
+fit = magtot * (      )   * (exp(-T/tau1)+mag2*exp(-T/tau2));
+localtrace=trace(startpoint:delta:endpoint);
+
+if (flag==0 | flag==-1)
+	
+	output = mean((localtrace-fit).^2);
+else
+	output = fit;
+end

@@ -1,0 +1,420 @@
+function res = wcivcal300()
+
+%%  IVCAL300.M
+%%  program to calculate IVs and r50 to 300.  
+%%  MBJ: integrated to whole cell viewer. 
+
+
+%%  old function input: 
+%%	function [xdata,ydata]=getrace(datafileID,infoblock,infoADRS,cur_run,swpnum)
+
+%%  Notes on assumptions
+%%
+%%  NOW modified to regular files.  Fairly recent plotswp logic for standard leaks.  Glitch advance cleanups
+%%  by dty on 9/5/00.
+%%	R1000 version
+
+
+%%  user input
+    global datafilepath datafilename HFmain;
+    emptyCat = 0;
+    pathname = datafilepath;
+	filename = datafilename;
+    % filename = '070708.mbj';
+    fullname = strcat(pathname,filename);
+    
+    Finfo = get(HFmain,'UserData');
+    TP = get(Finfo(2,2),'UserData');
+
+    rnum = TP(2,1);
+    maxrun = TP(2,2);
+    
+	%rnum =4;  
+	pulse = 2;		% pulse for rxxx measurement
+	pulse2 = 4;		% pulse for test pulse measurement
+	printflag = 0;  % print hardcopy of each sweep, 0 off, 1 on.
+    figpage = 6;
+	yaxisscale =3*0.75;		% number to multiply ymin of test pulse for max neg y scale value
+	peak = 1;       	% 1 for peak measurement, 2 for av5erage around peak 
+    fcutoff = 400;		%lowpass cutoff in Hz, if set to 0, then no filtering
+    glitch_advance = 20;	% sample points from beginning of pulses to ignore in peak detection
+    end_retard = 100;	% sample points from beginning of pulses to ignore in peak detection
+	reftrace = 2;		% used for axis scaling, based on test pulse size
+	peak_width = 3;		% pts to side to average
+	r_width = 8;		% pts to side to average for Ixxx
+    
+
+%%  open file
+
+	datafileID = fopen(fullname,'rb+');
+	[dirblock,count]=fread(datafileID,256,'short');
+	maxrun=dirblock(1);
+
+	infoADRS = dirblock(rnum*2+1);
+	status = fseek(datafileID,infoADRS*512,-1);
+	[infoblock,count]=fread(datafileID,128,'short');
+
+	if infoblock(1) == 32100
+		fileOK = 1;
+		disp ('file OK')
+        else
+		%  datafilename = 0;            % MBJ Not sure this is used in file
+                                        % elsewhere .. commented out to
+                                        % ensure that the global variable
+                                        % isn't changed thanks to an error.
+		disp ('files info block is weird')
+	end
+
+	fclose(datafileID);
+
+%% get infoblock information
+
+	maxswp = 	infoblock(1+1);			% number of sweeps
+	VH =		infoblock(2+1);			% holding potential
+	I = 		infoblock(6+1);			% sample interval (usec)
+	G = 		infoblock(7+1)/10;		% gain (mV/pA)
+	LF = 		infoblock(8+1);			% leak flag
+
+	if LF
+		maxswp = maxswp/2;
+	end;
+
+	NB =		infoblock(13+1);		% number of blocks per sweep
+	PR =		infoblock(15+1);		% points before first pulse
+	ST =		infoblock(18+1);		% sample type (0-step, 1-ramp, 2-family)
+	NI =		infoblock(19+1);		% variable changed in family
+	HZ =		infoblock(21+1);		% lopass filter frequency
+
+	family(1:3)=	infoblock(23:25);		% Family start,stop,increment
+	PV(1:8) =	infoblock(29:36);		% Pulse Block PV(NI-3) incremented in family
+
+	DE1 =		infoblock(38+1);		% First pulse saved
+	DE2 =		infoblock(39+1);		% Last pulse saved
+
+	PF = 	1000*(3.48*exp(-HZ/150)+ ...
+		0.73*exp(-HZ/650)+ ...
+		0.2*exp(-HZ/2700)+ ...
+		0.032*exp(-HZ/43500));
+
+	PF = round(PF/infoblock(6+1));			% Filter delay in points
+
+
+
+%% find startpoint, endpoint indices, for desired pulse
+
+	% calculate start/endpoint indices
+	TBlock = [];
+	TBlock(14) = PR+PF;  				% Length (in points) of initial region
+	TBlock(15) = TBlock(14)+1;			% Location of Start Pulse 1 (points)
+	TBlock(16) = TBlock(15)+round(PV(5)*1000/I);	% Location of Start Pulse 2 (points)	
+	TBlock(17) = TBlock(16)+round(PV(6)*1000/I);	% Location of Start Pulse 3 (points)
+	TBlock(18) = TBlock(17)+round(PV(7)*1000/I);	% Location of Start Pulse 4 (points)
+	TBlock(19) = TBlock(18)+round(PV(8)*1000/I)-1;	% Last Point of Pulse 4
+
+
+	startpoint = TBlock(15+(pulse-1));		% Pre pulse
+	endpoint = TBlock(15+pulse)-1;		
+
+	startpoint2 = TBlock(15+(pulse2-1));		% Test pulse
+	endpoint2 = TBlock(15+pulse2)-1;		
+
+
+%%  Setup timebase
+
+xdata = I/1000*([1:NB*256]-(PR+PF+1));		
+time = I/1000*([1:NB*256]-(PR+PF+1));		% PR+PF+1 is where first pulse starts
+ 
+
+%%  Setup windows
+
+flag = exist('fighand1');
+if (flag ~=0)
+	delete(fighand1)
+else
+	fighand1 = figure;
+end
+
+figure(fighand1)
+
+%% open file
+%%
+datafileID = fopen(fullname,'rb');
+%%
+%%
+
+swpnum = 1;	%just as an initialization of the variable
+
+%%
+%% get reference trace (for axis scaling)
+%%
+
+for swpnum = reftrace:reftrace
+
+	%%
+	%%	GET TRACE AND PERFORM LEAK SUBTRACTION (Determined by Flags)
+	%%
+
+	if (LF ~= 0) 						% Leak Pulses were acquired
+	
+		traceADRS = infoADRS+2+NB+2*NB*(swpnum-1);
+		leakADRS =  traceADRS+NB;
+	
+		fseek(datafileID,512*traceADRS,-1);
+		[dtrace,count]=fread(datafileID,256*NB,'short');
+	
+		fseek(datafileID,512*leakADRS,-1);
+		[leak,count]=fread(datafileID,256*NB,'short');
+
+		dtrace=	[dtrace(1:NB*256-12) - ...
+			(leak(1:NB*256-12) - mean(leak(1:PR)))*infoblock(37)/16;...
+			dtrace(NB*256-11:NB*256)];
+	else								% No Interpulse leaks
+
+		traceADRS = infoADRS+2+NB+NB*(swpnum-1);
+		
+		fseek(datafileID,512*traceADRS,-1);
+		[dtrace,count]=fread(datafileID,256*NB,'short');
+			
+	end
+	
+	%zero level the trace
+	dtrace(1:NB*256-11)=dtrace(1:NB*256-11)-mean(dtrace(1:PR));
+	%
+	pAtrace = dtrace*(10000/2048)/G;
+	ymin = yaxisscale * min(pAtrace(startpoint2:startpoint2+20*1000/I));	% Find test pulse peak
+    % within 20 msec
+	
+end
+
+% setup axis
+dataaxes = [time(1)  time(length(time)-12)  ymin   .5*abs(ymin)];
+axis ( [time(1)  time(length(time)-12)  ymin   .5*abs(ymin)]);
+%axis ( [time(startpoint)  time(endpoint)  ymin   .5*abs(ymin)]);
+axis(axis);
+hold
+
+
+datamatrix = zeros(maxswp,7);  %7 rows fcor the data. change when adding more data rows.  
+
+for swpnum = 1:maxswp
+
+	%%
+	%%	GET TRACE AND PERFORM LEAK SUBTRACTION (Determined by Flags)
+	%%
+
+	if (LF ~= 0) 						% Leak Pulses were acquired
+	
+		traceADRS = infoADRS+2+NB+2*NB*(swpnum-1);
+		leakADRS =  traceADRS+NB;
+	
+		fseek(datafileID,512*traceADRS,-1);
+		[dtrace,count]=fread(datafileID,256*NB,'short');
+
+		Vpre = dtrace(length(dtrace)-1);
+			
+		fseek(datafileID,512*leakADRS,-1);
+		[leak,count]=fread(datafileID,256*NB,'short');
+
+		dtrace=	[dtrace(1:NB*256-12) - ...
+			(leak(1:NB*256-12) - mean(leak(1:PR)))*infoblock(37)/16;...
+			dtrace(NB*256-11:NB*256)];
+	else								% No Interpulse leaks
+
+		traceADRS = infoADRS+2+NB+NB*(swpnum-1);
+		
+		fseek(datafileID,512*traceADRS,-1);
+		[dtrace,count]=fread(datafileID,256*NB,'short');
+			
+	end
+	
+	%zero level the trace
+	dtrace(1:NB*256-11)=dtrace(1:NB*256-11)-mean(dtrace(1:PR));
+	%
+	
+	pAtrace = dtrace*(10000/2048)/G;
+
+    if fcutoff ~= 0
+		pAtrace = filt2(time, pAtrace', fcutoff)';
+	end
+    
+    082410.mbj 	 18-AUG-9 	   	 11 	   	   	 -1 	 -1 	 70% 	 ???	  	 o140 K .5 ADP .1 ATP	 TEA-MS	 Tyrod
+ Comments:	Kir6.1 wt cel 3
+	%%
+	%% this is the custom analysis area
+	%%
+
+	if peak == 1
+		[pAprepulse, minloc] = min(pAtrace(startpoint+glitch_advance:endpoint-end_retard));
+		minloc = minloc + glitch_advance;
+		%
+		[pAtestpulse, minloc2] = min(pAtrace(startpoint2+glitch_advance:endpoint2-end_retard));
+		minloc2 = minloc2 + glitch_advance;
+		%
+	elseif peak == 2
+		[pAprepulse, minloc] = min(pAtrace(startpoint+glitch_advance:endpoint-end_retard));
+		minloc = minloc + glitch_advance;
+		pAprepulse = mean(pAtrace(startpoint-1+minloc-peak_width:startpoint-1+minloc+peak_width));
+		[pAtestpulse, minloc2] = min(pAtrace(startpoint2+glitch_advance:endpoint2-end_retard));
+		minloc2 = minloc2 + glitch_advance;
+		pAtestpulse = mean(pAtrace(startpoint2-1+minloc2-peak_width:startpoint2-1+minloc2+peak_width));
+        
+	end
+
+	i100 = mean(pAtrace(startpoint-1+round(100*1000/I)-r_width:startpoint-1+round(100*1000/I)+r_width));
+	r100 = i100/pAprepulse;
+	if minloc > round(100*1000/I)
+		r100 = 1;
+	end
+
+	i300 = mean(pAtrace(startpoint-1+round(295*1000/I)-r_width:startpoint-1+round(295*1000/I)+r_width));
+	r300 = i300/pAprepulse;
+	if minloc > round(295*1000/I)
+		r300 = 1;
+    end
+    tval = 50;
+    i50 = mean(pAtrace(startpoint-1+round(tval*1000/I)-r_width:startpoint-1+round(tval*1000/I)+r_width));
+	r50 = i50/pAprepulse;
+	if minloc > round(tval*1000/I)
+		r50 = 1;
+    end
+%    
+%     i500 = mean(pAtrace(startpoint-1+round(500*1000/I)-r_width:startpoint-1+round(500*1000/I)+r_width));
+% 	r500 = i500/pAprepulse;
+% 	if minloc > round(500*1000/I)
+% 		r500 = 1;
+%     end
+%    
+%     
+    
+    tail = min(pAtrace(startpoint-1+round(300*1000/I)-r_width:startpoint-1+round(300*1000/I)+r_width));
+	if minloc > round(301*1000/I)
+		r300 = 1;
+	end
+    
+    %i1990 = mean(pAtrace(startpoint-1+round(1990*1000/I)-r_width:startpoint-1+round(1990*1000/I)+r_width));
+	%r1990 = i1990/pAprepulse;
+	%if minloc > round(1990*1000/I)
+	%	r1990 = 1;
+	%end
+
+
+
+
+	%%
+	%%
+	%%
+    %figure(1);
+	%cla
+    %hold on
+    
+	plot(time,pAtrace)
+
+	xlim = get(gca,'Xlim');
+	ylim = get(gca,'Ylim');
+    figure(fighand1)
+	plot(xlim,[0 0],'w')
+	plot( time(startpoint+minloc-1), pAprepulse,'r+')
+	plot(time(startpoint2+minloc2-1), pAtestpulse,'g+')
+    plot(time(startpoint+round(300*1000/I)-1),tail,'m+')
+	plot(time(startpoint+round(100*1000/I)-1),i100,'co')
+	plot([time(startpoint+round(100*1000/I)-1) time(startpoint+round(100*1000/I)-1)], ylim,'c')
+	plot(time(startpoint+round(295*1000/I)-1),i300,'co')
+	plot([time(startpoint+round(295*1000/I)-1) time(startpoint+round(295*1000/I)-1)], ylim,'c')
+	plot(time(startpoint+round(50*1000/I)-1),i50,'co')
+	plot([time(startpoint+round(50*1000/I)-1) time(startpoint+round(50*1000/I)-1)], ylim,'c')
+    %plot(time(startpoint+round(1990*1000/I)-1),i1990,'co')
+	%plot([time(startpoint+round(1990*1000/I)-1) time(startpoint+round(1990*1000/I)-1)], ylim,'c')
+
+	title_string = ['File = ', filename, '  Run = ', num2str(rnum), ' Vpre = ', num2str(Vpre), ...
+			' pre (pA) =', num2str(pAprepulse), ' test (pA) =', num2str(pAtestpulse)];
+
+    %title_string = [' Run = ', num2str(rnum), ' Vpre = ', num2str(Vpre), ...
+			%' pre (pA) =', num2str(pAprepulse), ' test (pA) =', num2str(pAtestpulse)];
+    
+	title(title_string, 'FontSize',9);
+
+	text_string = [' r100 = ', num2str(r100), ...
+			' r300 =', num2str(r300), ' r50 =', num2str(r50)];
+
+	text(xlim(1)+500,ylim(2),text_string, 'FontSize',9);
+
+
+	drawnow
+
+	 
+%     fprintf(1,'%6.0f\t',Vpre);
+% 	fprintf(1,'%8.2f\t', pAprepulse);
+%     fprintf(1,'%8.4f\t', i300);	
+%     fprintf(1,'%8.4f\t', pAtestpulse);
+% %     fprintf(1,'%8.4f\t', emptyCat);
+%     fprintf(1,'%8.4f\t', r50);	
+%     fprintf(1,'%8.2f\t', r100);
+%     fprintf(1,'%8.2f\n', r300);
+ 	datamatrix(swpnum, :) = [Vpre, pAprepulse, i300, pAtestpulse, r50, r100,r300];
+   
+
+
+	%pause
+	if printflag == 1
+		index = round(figpage*((swpnum/figpage)-ceil((swpnum/figpage)-1)));
+        fignum = 1+ceil(swpnum/figpage);
+        figure(fignum);
+        if figpage > 1
+            subplot(2,round(figpage/2),index);
+        else
+            clf
+        end
+                cla;
+        hold on	
+        axis(dataaxes);
+        
+        plot(time,pAtrace)
+
+	    xlim = get(gca,'Xlim');
+	    ylim = get(gca,'Ylim');
+
+	    plot(xlim,[0 0],'w')
+	    plot(time(startpoint+minloc-1), pAprepulse,'r+')
+	    plot(time(startpoint2+minloc2-1), pAtestpulse,'g+')
+	    plot(time(startpoint+round(300*1000/I)-1),i300,'co')
+	    plot([time(startpoint+round(300*1000/I)-1) time(startpoint+round(300*1000/I)-1)], ylim,'c')
+% 	    plot(time(startpoint+round(800*1000/I)-1),i800,'co')
+% 	    plot([time(startpoint+round(800*1000/I)-1) time(startpoint+round(800*1000/I)-1)], ylim,'c')
+%         
+        title_string = ['File = ', filename, ' Run = ', num2str(rnum), ' Vpre = ', num2str(Vpre), ...
+			' pre (pA) =', num2str(pAprepulse), ' r300 = ', num2str(r300)];
+
+	    title(title_string, 'FontSize',6);
+
+% 	    text_string = [' r300 = ', num2str(r300)];     %, ' r1990 =', num2str(r1990)];
+% 
+% 	    text(xlim(1)+500,ylim(2)+400,text_string, 'FontSize',4);
+
+
+	    drawnow
+    else
+        pause(0.2)
+    end
+    
+% 	else
+% 		pause	
+% 	end
+% 	
+end
+
+datatxt = sprintf('%5.1f \t %6.3f \t %6.3f \t %6.3f \t %6.3f \t %6.3f \t %6.3f\n', datamatrix');
+fprintf('%s',datatxt);
+clipboard('copy', datatxt);
+
+
+if printflag == 1
+    for i = 2:fignum
+        figure(i);
+        orient(figure(i), 'landscape')
+        print;        
+    end
+end
+
+%% close file
+fclose(datafileID);
+%%

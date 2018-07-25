@@ -1,0 +1,27 @@
+function output = expF1SAR(x)
+global trace startpoint endpoint I flag;
+%%	
+% EXPF1SAR.M	Single Exponential Activation Rate
+%		
+%
+%%		x:  		[tau1 mag1]
+%%  		data:		data to be fit
+%%		startpoint: 	datapoint to start fit
+%%		endpoint:	datapoint to end fit
+
+
+tau1 = x(1);
+mag1 = x(2);
+
+trace = trace(startpoint:endpoint);	% Current in pA
+T = I*[0:(endpoint-startpoint)]/1000;	% Time in ms
+
+fit = mag1*(1-exp(-T/tau1));
+
+if (flag==0)	
+	output = mean((trace-fit).^2);
+else
+	output = fit;
+end
+
+	

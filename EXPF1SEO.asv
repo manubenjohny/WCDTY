@@ -1,0 +1,30 @@
+function output = expF1SEO(x, trace, startpoint, endpoint, I, flag)
+
+%	EXPF1SEO	Single Exponential Fit with Offset
+%		x:  		[tau1 mag1 offset]
+%  		trace:		data to be fit
+%		startpoint: datapoint to start fit
+%		endpoint:	datapoint to end fit
+
+
+tau1 = x(1);
+mag1 = x(2);
+offset = x(3);
+
+if (flag==0)
+	delta = ceil((endpoint-startpoint)/1000);
+else
+	delta = 1;
+end
+
+trace = trace(startpoint:delta:endpoint);	% Current in pA
+T = I*[0:delta:(endpoint-startpoint)]/1000;	% Time in ms
+fit = mag1*exp(-T/tau1)+offset;
+
+if (flag==0)	
+	output = mean((trace-fit).^2);
+else
+	output = fit;
+end
+
+	
